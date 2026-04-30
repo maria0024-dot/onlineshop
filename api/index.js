@@ -1,4 +1,4 @@
-﻿import { PassThrough, Readable, Transform } from "node:stream";
+import { PassThrough, Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 export const config = {
