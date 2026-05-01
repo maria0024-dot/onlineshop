@@ -55,6 +55,28 @@ function Get-TokenStorePath([string]$ProjectRoot) {
   return (Join-Path $ProjectRoot ".vercel-token.dpapi")
 }
 
+function Get-ScopeStorePath([string]$ProjectRoot) {
+  return (Join-Path $ProjectRoot ".vercel-scope.txt")
+}
+
+function Save-Scope([string]$Scope, [string]$Path) {
+  $value = ""
+  if ($null -ne $Scope) { $value = $Scope.Trim() }
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $value, $utf8NoBom)
+}
+
+function Load-Scope([string]$Path) {
+  if (-not (Test-Path $Path)) { return "" }
+  try {
+    $raw = Get-Content $Path -Raw
+    if ($null -eq $raw) { return "" }
+    return $raw.Trim()
+  } catch {
+    return ""
+  }
+}
+
 function Save-TokenSecure([string]$Token, [string]$Path) {
   $secure = ConvertTo-SecureString -String $Token -AsPlainText -Force
   $text = ConvertFrom-SecureString -SecureString $secure
@@ -269,6 +291,24 @@ function Ensure-VercelLogin([string]$OutputDir, [string]$TokenStorePath) {
   }
 
   & $VercelExe whoami | Out-Host
+}
+
+function Resolve-SessionScope([string]$ScopeStorePath) {
+  $savedScope = Load-Scope -Path $ScopeStorePath
+  if (-not [string]::IsNullOrWhiteSpace($savedScope)) {
+    $useSaved = Read-Default ("Use saved scope/team '{0}'? (Y/n)" -f $savedScope) "y"
+    if ($useSaved.ToLowerInvariant() -ne "n") {
+      return $savedScope
+    }
+  }
+
+  Write-Host ""
+  Write-Host "Scope note: enter your Vercel team slug to avoid wrong CLI context." -ForegroundColor DarkYellow
+  $scope = Read-Optional "Scope slug/team (optional, press Enter for personal account)"
+  if (-not [string]::IsNullOrWhiteSpace($scope)) {
+    Save-Scope -Scope $scope -Path $ScopeStorePath
+  }
+  return $scope
 }
 
 function Ensure-VercelProject([string]$ProjectName, [string]$Scope) {
@@ -530,11 +570,15 @@ function Show-DeploySummary($deployInfo) {
   Write-Host ""
 }
 
-function Collect-NewDeploymentConfig {
+function Collect-NewDeploymentConfig([string]$DefaultScope) {
   Write-Step "Collecting config values..."
   $projectNameInput = Read-Optional "Project name on Vercel (leave empty for random)"
   $projectName = if ([string]::IsNullOrWhiteSpace($projectNameInput)) { New-RandomProjectName } else { $projectNameInput }
-  $scope = Read-Host "Scope slug/team (optional, press Enter to skip)"
+  if ([string]::IsNullOrWhiteSpace($DefaultScope)) {
+    $scope = Read-Host "Scope slug/team (optional, press Enter to skip)"
+  } else {
+    $scope = Read-Default "Scope slug/team" $DefaultScope
+  }
   $scope = $scope.Trim()
   $targetDomain = Read-Required "TARGET_DOMAIN (example: https://your-upstream-domain:443)"
   $relayPath = Read-Default "RELAY_PATH (MUST be EXACT inbound path on your foreign server, e.g. /api or /freedom)" "/api"
@@ -572,8 +616,8 @@ function Apply-ProductionEnv($cfg) {
   Set-VercelEnv -Name "MAX_DOWN_BPS" -Value $cfg.MaxDownBps -Target "production" -Scope $cfg.Scope
 }
 
-function Run-NewDeploymentFlow {
-  $cfg = Collect-NewDeploymentConfig
+function Run-NewDeploymentFlow([string]$DefaultScope) {
+  $cfg = Collect-NewDeploymentConfig -DefaultScope $DefaultScope
   Ensure-VercelProject -ProjectName $cfg.ProjectName -Scope $cfg.Scope
   Link-VercelProject -ProjectName $cfg.ProjectName -Scope $cfg.Scope
   Apply-ProductionEnv -cfg $cfg
@@ -832,9 +876,9 @@ function Show-ManageMenu($selectedProjectName, $scope) {
   return (Read-Default "Choose action" "1")
 }
 
-function Run-ManagementLoop {
+function Run-ManagementLoop([string]$InitialScope) {
   $link = Get-LinkedProjectInfo -ProjectRoot $scriptDir
-  $scope = $link.Scope
+  $scope = if (-not [string]::IsNullOrWhiteSpace($link.Scope)) { $link.Scope } else { $InitialScope }
   $selectedProjectName = $link.ProjectName
 
   if ([string]::IsNullOrWhiteSpace($selectedProjectName)) {
@@ -844,7 +888,7 @@ function Run-ManagementLoop {
       Ensure-LinkedToProject -ProjectName $selectedProjectName -Scope $scope
       Write-Host "Selected project: $selectedProjectName" -ForegroundColor Green
     } else {
-      Run-NewDeploymentFlow
+      Run-NewDeploymentFlow -DefaultScope $scope
       $link = Get-LinkedProjectInfo -ProjectRoot $scriptDir
       if ($link.ProjectName) { $selectedProjectName = $link.ProjectName }
       if ($link.Scope) { $scope = $link.Scope }
@@ -900,7 +944,7 @@ function Run-ManagementLoop {
           Write-Host "Done."
         }
         "5" {
-          Run-NewDeploymentFlow
+          Run-NewDeploymentFlow -DefaultScope $scope
           $newLink = Get-LinkedProjectInfo -ProjectRoot $scriptDir
           if ($newLink.ProjectName) { $selectedProjectName = $newLink.ProjectName }
           if ($newLink.Scope) { $scope = $newLink.Scope }
@@ -926,6 +970,7 @@ Write-Host "Tip: Press Ctrl+C at any step to stop/exit." -ForegroundColor DarkYe
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 $tokenStorePath = Get-TokenStorePath -ProjectRoot $scriptDir
+$scopeStorePath = Get-ScopeStorePath -ProjectRoot $scriptDir
 
 if (-not (Test-Path (Join-Path $scriptDir "api\index.js"))) {
   throw "api/index.js not found. Run this script from project root."
@@ -937,6 +982,7 @@ if (-not (Test-Path (Join-Path $scriptDir "vercel.json"))) {
 Ensure-NodeAndNpm
 Ensure-VercelCli
 Ensure-VercelLogin -OutputDir $scriptDir -TokenStorePath $tokenStorePath
+$sessionScope = Resolve-SessionScope -ScopeStorePath $scopeStorePath
 Write-Host "Deploy path: $scriptDir" -ForegroundColor DarkGray
 
-Run-ManagementLoop
+Run-ManagementLoop -InitialScope $sessionScope

@@ -1,5 +1,6 @@
 import { PassThrough, Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { setDefaultResultOrder } from "node:dns";
 
 export const config = {
   api: { bodyParser: false },
@@ -8,6 +9,7 @@ export const config = {
 };
 
 const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
+const UPSTREAM_DNS_ORDER = (process.env.UPSTREAM_DNS_ORDER || "ipv4first").trim().toLowerCase();
 const PLATFORM_HEADER_PREFIX = `x-${String.fromCharCode(118, 101, 114, 99, 101, 108)}-`;
 const RELAY_PATH = normalizeRelayPath(process.env.RELAY_PATH || "");
 const RELAY_KEY = (process.env.RELAY_KEY || "").trim();
@@ -15,6 +17,8 @@ const UPSTREAM_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_TIMEOUT_MS, 12
 const MAX_INFLIGHT = parsePositiveInt(process.env.MAX_INFLIGHT, 192, 1);
 const MAX_UP_BPS = parseNonNegativeInt(process.env.MAX_UP_BPS, 5242880);
 const MAX_DOWN_BPS = parseNonNegativeInt(process.env.MAX_DOWN_BPS, 5242880);
+
+applyDnsPreference();
 
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST"]);
 const FORWARD_HEADER_EXACT = new Set([
@@ -79,7 +83,9 @@ export default async function handler(req, res) {
     const host = req.headers.host || "localhost";
     const url = new URL(req.url || "/", `https://${host}`);
 
-    if (!isAllowedRelayPath(url.pathname)) {
+    const normalizedPath = normalizeIncomingPath(url.pathname);
+
+    if (!isAllowedRelayPath(normalizedPath)) {
       res.statusCode = 404;
       return res.end("Not Found");
     }
@@ -104,7 +110,7 @@ export default async function handler(req, res) {
     }
     slotAcquired = true;
 
-    const targetUrl = `${TARGET_BASE}${url.pathname}${url.search || ""}`;
+    const targetUrl = `${TARGET_BASE}${normalizedPath}${url.search || ""}`;
 
     const headers = {};
     const clientIp = toHeaderValue(req.headers["x-real-ip"] || req.headers["x-forwarded-for"]);
@@ -164,7 +170,8 @@ export default async function handler(req, res) {
       const durationMs = Date.now() - startedAt;
       console.info("relay ok", {
         requestId,
-        path: url.pathname,
+        path: normalizedPath,
+        rawPath: url.pathname,
         method: req.method,
         status: upstream.status,
         durationMs,
@@ -211,6 +218,13 @@ function shouldForwardHeader(headerName) {
   return false;
 }
 
+function applyDnsPreference() {
+  if (UPSTREAM_DNS_ORDER !== "ipv4first" && UPSTREAM_DNS_ORDER !== "verbatim") return;
+  try {
+    setDefaultResultOrder(UPSTREAM_DNS_ORDER);
+  } catch {}
+}
+
 function isAllowedRelayPath(pathname) {
   return pathname === RELAY_PATH || pathname.startsWith(`${RELAY_PATH}/`);
 }
@@ -220,6 +234,14 @@ function normalizeRelayPath(rawPath) {
   const path = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
   if (path.length > 1 && path.endsWith("/")) return path.slice(0, -1);
   return path;
+}
+
+function normalizeIncomingPath(pathname) {
+  if (!pathname) return "/";
+  let normalized = String(pathname).replace(/\/{2,}/g, "/");
+  if (!normalized.startsWith("/")) normalized = `/${normalized}`;
+  if (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
 }
 
 function parsePositiveInt(rawValue, fallbackValue, minValue) {
