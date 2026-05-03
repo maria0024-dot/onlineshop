@@ -582,20 +582,25 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
   $scope = $scope.Trim()
   $targetDomain = Read-Required "TARGET_DOMAIN (example: https://your-upstream-domain:443)"
   $relayPath = Read-Default "RELAY_PATH (MUST be EXACT inbound path on your foreign server, e.g. /api or /freedom)" "/api"
+  $publicRelayPath = Read-Default "PUBLIC_RELAY_PATH (public endpoint on this domain)" "/api"
+  $landingTemplate = Read-Optional "LANDING_TEMPLATE (optional template folder name; empty = random each build)"
   $maxInflight = Read-Default "MAX_INFLIGHT" "128"
   $maxUpBps = Read-Default "MAX_UP_BPS" "2621440"
   $maxDownBps = Read-Default "MAX_DOWN_BPS" "2621440"
-  $upstreamTimeoutMs = Read-Default "UPSTREAM_TIMEOUT_MS" "25000"
+  $upstreamTimeoutMs = Read-Default "UPSTREAM_TIMEOUT_MS" "50000"
   $successLogSampleRate = Read-Default "SUCCESS_LOG_SAMPLE_RATE" "0"
   $successLogMinDurationMs = Read-Default "SUCCESS_LOG_MIN_DURATION_MS" "3000"
   $errorLogMinIntervalMs = Read-Default "ERROR_LOG_MIN_INTERVAL_MS" "5000"
 
   if (-not $relayPath.StartsWith("/")) { $relayPath = "/$relayPath" }
+  if (-not $publicRelayPath.StartsWith("/")) { $publicRelayPath = "/$publicRelayPath" }
 
   Write-Step "Environment values selected:"
   Write-Host "TARGET_DOMAIN = $targetDomain"
   Write-Host "PROJECT_NAME  = $projectName"
   Write-Host "RELAY_PATH    = $relayPath"
+  Write-Host "PUBLIC_RELAY_PATH = $publicRelayPath"
+  if (-not [string]::IsNullOrWhiteSpace($landingTemplate)) { Write-Host "LANDING_TEMPLATE = $landingTemplate" } else { Write-Host "LANDING_TEMPLATE = (random)" }
   Write-Host "MAX_INFLIGHT  = $maxInflight"
   Write-Host "MAX_UP_BPS    = $maxUpBps"
   Write-Host "MAX_DOWN_BPS  = $maxDownBps"
@@ -609,6 +614,8 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
     Scope = $scope
     TargetDomain = $targetDomain
     RelayPath = $relayPath
+    PublicRelayPath = $publicRelayPath
+    LandingTemplate = $landingTemplate
     MaxInflight = $maxInflight
     MaxUpBps = $maxUpBps
     MaxDownBps = $maxDownBps
@@ -623,6 +630,10 @@ function Apply-ProductionEnv($cfg) {
   Write-Step "Setting environment variables for production..."
   Set-VercelEnv -Name "TARGET_DOMAIN" -Value $cfg.TargetDomain -Target "production" -Scope $cfg.Scope
   Set-VercelEnv -Name "RELAY_PATH" -Value $cfg.RelayPath -Target "production" -Scope $cfg.Scope
+  Set-VercelEnv -Name "PUBLIC_RELAY_PATH" -Value $cfg.PublicRelayPath -Target "production" -Scope $cfg.Scope
+  if (-not [string]::IsNullOrWhiteSpace($cfg.LandingTemplate)) {
+    Set-VercelEnv -Name "LANDING_TEMPLATE" -Value $cfg.LandingTemplate -Target "production" -Scope $cfg.Scope
+  }
   Set-VercelEnv -Name "MAX_INFLIGHT" -Value $cfg.MaxInflight -Target "production" -Scope $cfg.Scope
   Set-VercelEnv -Name "MAX_UP_BPS" -Value $cfg.MaxUpBps -Target "production" -Scope $cfg.Scope
   Set-VercelEnv -Name "MAX_DOWN_BPS" -Value $cfg.MaxDownBps -Target "production" -Scope $cfg.Scope
@@ -646,18 +657,25 @@ function Run-UpdateEnvFlow([string]$Scope) {
   Write-Step "Update production env vars (required + economic defaults)..."
   $targetDomain = Read-Required "TARGET_DOMAIN"
   $relayPath = Read-Required "RELAY_PATH (inbound path on foreign server)"
+  $publicRelayPath = Read-Default "PUBLIC_RELAY_PATH (public endpoint on this domain)" "/api"
+  $landingTemplate = Read-Optional "LANDING_TEMPLATE (optional template folder name; empty keeps previous/random)"
   $maxInflight = Read-Default "MAX_INFLIGHT" "128"
   $maxUpBps = Read-Default "MAX_UP_BPS" "2621440"
   $maxDownBps = Read-Default "MAX_DOWN_BPS" "2621440"
-  $upstreamTimeoutMs = Read-Default "UPSTREAM_TIMEOUT_MS" "25000"
+  $upstreamTimeoutMs = Read-Default "UPSTREAM_TIMEOUT_MS" "50000"
   $successLogSampleRate = Read-Default "SUCCESS_LOG_SAMPLE_RATE" "0"
   $successLogMinDurationMs = Read-Default "SUCCESS_LOG_MIN_DURATION_MS" "3000"
   $errorLogMinIntervalMs = Read-Default "ERROR_LOG_MIN_INTERVAL_MS" "5000"
 
   if (-not $relayPath.StartsWith("/")) { $relayPath = "/$relayPath" }
+  if (-not $publicRelayPath.StartsWith("/")) { $publicRelayPath = "/$publicRelayPath" }
 
   Set-VercelEnv -Name "TARGET_DOMAIN" -Value $targetDomain -Target "production" -Scope $Scope
   Set-VercelEnv -Name "RELAY_PATH" -Value $relayPath -Target "production" -Scope $Scope
+  Set-VercelEnv -Name "PUBLIC_RELAY_PATH" -Value $publicRelayPath -Target "production" -Scope $Scope
+  if (-not [string]::IsNullOrWhiteSpace($landingTemplate)) {
+    Set-VercelEnv -Name "LANDING_TEMPLATE" -Value $landingTemplate -Target "production" -Scope $Scope
+  }
   Set-VercelEnv -Name "MAX_INFLIGHT" -Value $maxInflight -Target "production" -Scope $Scope
   Set-VercelEnv -Name "MAX_UP_BPS" -Value $maxUpBps -Target "production" -Scope $Scope
   Set-VercelEnv -Name "MAX_DOWN_BPS" -Value $maxDownBps -Target "production" -Scope $Scope

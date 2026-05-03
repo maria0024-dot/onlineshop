@@ -12,6 +12,7 @@ const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 const UPSTREAM_DNS_ORDER = (process.env.UPSTREAM_DNS_ORDER || "ipv4first").trim().toLowerCase();
 const PLATFORM_HEADER_PREFIX = `x-${String.fromCharCode(118, 101, 114, 99, 101, 108)}-`;
 const RELAY_PATH = normalizeRelayPath(process.env.RELAY_PATH || "");
+const PUBLIC_RELAY_PATH = normalizeRelayPath(process.env.PUBLIC_RELAY_PATH || "/api");
 const RELAY_KEY = (process.env.RELAY_KEY || "").trim();
 const UPSTREAM_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_TIMEOUT_MS, 25000, 1000);
 const MAX_INFLIGHT = parsePositiveInt(process.env.MAX_INFLIGHT, 128, 1);
@@ -20,6 +21,8 @@ const MAX_DOWN_BPS = parseNonNegativeInt(process.env.MAX_DOWN_BPS, 2621440);
 const SUCCESS_LOG_SAMPLE_RATE = clampNumber(parseFloat(process.env.SUCCESS_LOG_SAMPLE_RATE || "0"), 0, 1);
 const SUCCESS_LOG_MIN_DURATION_MS = parseNonNegativeInt(process.env.SUCCESS_LOG_MIN_DURATION_MS, 3000);
 const ERROR_LOG_MIN_INTERVAL_MS = parseNonNegativeInt(process.env.ERROR_LOG_MIN_INTERVAL_MS, 5000);
+const GLOBAL_UPLOAD_LIMITER = createGlobalLimiter(MAX_UP_BPS);
+const GLOBAL_DOWNLOAD_LIMITER = createGlobalLimiter(MAX_DOWN_BPS);
 
 applyDnsPreference();
 
@@ -81,6 +84,14 @@ export default async function handler(req, res) {
     res.statusCode = 500;
     return res.end("Misconfigured: RELAY_PATH cannot be '/'");
   }
+  if (!PUBLIC_RELAY_PATH) {
+    res.statusCode = 500;
+    return res.end("Misconfigured: PUBLIC_RELAY_PATH is not set");
+  }
+  if (PUBLIC_RELAY_PATH === "/") {
+    res.statusCode = 500;
+    return res.end("Misconfigured: PUBLIC_RELAY_PATH cannot be '/'");
+  }
   if (RELAY_KEY && RELAY_KEY.length < 16) {
     res.statusCode = 500;
     return res.end("Misconfigured: RELAY_KEY is too short");
@@ -92,10 +103,11 @@ export default async function handler(req, res) {
 
     const normalizedPath = normalizeIncomingPath(url.pathname);
 
-    if (!isAllowedRelayPath(normalizedPath)) {
+    if (!isAllowedRelayPath(normalizedPath, PUBLIC_RELAY_PATH)) {
       res.statusCode = 404;
       return res.end("Not Found");
     }
+    const upstreamPath = mapPublicPathToRelayPath(normalizedPath, PUBLIC_RELAY_PATH, RELAY_PATH);
 
     if (!ALLOWED_METHODS.has(req.method)) {
       res.statusCode = 405;
@@ -117,7 +129,7 @@ export default async function handler(req, res) {
     }
     slotAcquired = true;
 
-    const targetUrl = `${TARGET_BASE}${normalizedPath}${url.search || ""}`;
+    const targetUrl = `${TARGET_BASE}${upstreamPath}${url.search || ""}`;
 
     const headers = {};
     const clientIp = toHeaderValue(req.headers["x-real-ip"] || req.headers["x-forwarded-for"]);
@@ -135,7 +147,10 @@ export default async function handler(req, res) {
 
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const abortCtrl = new AbortController();
-    const timeoutRef = setTimeout(() => abortCtrl.abort("upstream_timeout"), UPSTREAM_TIMEOUT_MS);
+    const timeoutRef = setTimeout(() => abortCtrl.abort(new Error("upstream_timeout")), UPSTREAM_TIMEOUT_MS);
+    let requestErrorHandler = null;
+    let uploadErrorHandler = null;
+    let uploadNodeStream = null;
 
     try {
       const fetchOpts = {
@@ -146,9 +161,32 @@ export default async function handler(req, res) {
       };
 
       if (hasBody) {
-        const uploadNodeStream = MAX_UP_BPS > 0
-          ? req.pipe(createThrottleTransform(MAX_UP_BPS))
+        uploadNodeStream = GLOBAL_UPLOAD_LIMITER
+          ? req.pipe(createThrottleTransform(GLOBAL_UPLOAD_LIMITER))
           : req;
+
+        requestErrorHandler = (streamErr) => {
+          if (isUpstreamTimeoutError(streamErr)) return;
+          emitRateLimitedError("error", "relay upload request stream error", {
+            requestId,
+            method: req.method,
+            error: String(streamErr),
+          });
+        };
+        req.on("error", requestErrorHandler);
+
+        uploadErrorHandler = (streamErr) => {
+          if (isUpstreamTimeoutError(streamErr)) return;
+          emitRateLimitedError("error", "relay upload stream error", {
+            requestId,
+            method: req.method,
+            error: String(streamErr),
+          });
+        };
+        if (uploadNodeStream && uploadNodeStream !== req) {
+          uploadNodeStream.on("error", uploadErrorHandler);
+        }
+
         fetchOpts.body = Readable.toWeb(uploadNodeStream);
         fetchOpts.duplex = "half";
       }
@@ -168,8 +206,8 @@ export default async function handler(req, res) {
         res.end();
       } else {
         const upstreamNode = Readable.fromWeb(upstream.body);
-        const downloadStream = MAX_DOWN_BPS > 0
-          ? upstreamNode.pipe(createThrottleTransform(MAX_DOWN_BPS))
+        const downloadStream = GLOBAL_DOWNLOAD_LIMITER
+          ? upstreamNode.pipe(createThrottleTransform(GLOBAL_DOWNLOAD_LIMITER))
           : upstreamNode;
         await pipeline(downloadStream, res);
       }
@@ -178,6 +216,7 @@ export default async function handler(req, res) {
       maybeLogSuccess({
         requestId,
         path: normalizedPath,
+        upstreamPath,
         rawPath: url.pathname,
         method: req.method,
         status: upstream.status,
@@ -185,10 +224,14 @@ export default async function handler(req, res) {
       });
     } finally {
       clearTimeout(timeoutRef);
+      if (requestErrorHandler) req.off("error", requestErrorHandler);
+      if (uploadNodeStream && uploadNodeStream !== req && uploadErrorHandler) {
+        uploadNodeStream.off("error", uploadErrorHandler);
+      }
     }
   } catch (err) {
     const durationMs = Date.now() - startedAt;
-    if (err?.name === "AbortError") {
+    if (isUpstreamTimeoutError(err)) {
       emitRateLimitedError("timeout", "relay timeout", {
         requestId,
         method: req.method,
@@ -266,8 +309,23 @@ function applyDnsPreference() {
   } catch {}
 }
 
-function isAllowedRelayPath(pathname) {
-  return pathname === RELAY_PATH || pathname.startsWith(`${RELAY_PATH}/`);
+function isUpstreamTimeoutError(err) {
+  if (!err) return false;
+  if (err?.name === "AbortError") return true;
+  if (err?.message === "upstream_timeout") return true;
+  if (err?.cause?.message === "upstream_timeout") return true;
+  if (typeof err === "string" && err === "upstream_timeout") return true;
+  return false;
+}
+
+function isAllowedRelayPath(pathname, publicPath) {
+  return pathname === publicPath || pathname.startsWith(`${publicPath}/`);
+}
+
+function mapPublicPathToRelayPath(pathname, publicPath, relayPath) {
+  if (pathname === publicPath) return relayPath;
+  const suffix = pathname.slice(publicPath.length);
+  return `${relayPath}${suffix}`;
 }
 
 function normalizeRelayPath(rawPath) {
@@ -319,24 +377,59 @@ function releaseSlot() {
   inFlight = Math.max(0, inFlight - 1);
 }
 
-function createThrottleTransform(bytesPerSecond) {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
-    return new PassThrough();
-  }
+function createGlobalLimiter(bytesPerSecond) {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return null;
 
   const burstCap = Math.max(bytesPerSecond, 262144);
   let tokens = burstCap;
   let lastRefill = Date.now();
+  const queue = [];
+  let timer = null;
 
-  function refillTokens() {
+  function refill() {
     const now = Date.now();
     const elapsedMs = now - lastRefill;
     if (elapsedMs <= 0) return;
-
     const refillAmount = (elapsedMs * bytesPerSecond) / 1000;
     tokens = Math.min(burstCap, tokens + refillAmount);
     lastRefill = now;
   }
+
+  function tryDrain() {
+    refill();
+    while (queue.length > 0 && tokens >= 1) {
+      const item = queue[0];
+      const grant = Math.min(item.maxBytes, Math.max(1, Math.floor(tokens)));
+      if (grant < 1) break;
+      tokens -= grant;
+      queue.shift();
+      item.resolve(grant);
+    }
+  }
+
+  function schedule() {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      tryDrain();
+      if (queue.length > 0) schedule();
+    }, 5);
+  }
+
+  return {
+    acquire(maxBytes) {
+      const requested = Math.max(1, Math.trunc(maxBytes || 1));
+      return new Promise((resolve) => {
+        queue.push({ maxBytes: requested, resolve });
+        tryDrain();
+        if (queue.length > 0) schedule();
+      });
+    },
+  };
+}
+
+function createThrottleTransform(limiter) {
+  if (!limiter) return new PassThrough();
 
   return new Transform({
     transform(chunk, _encoding, callback) {
@@ -345,32 +438,18 @@ function createThrottleTransform(bytesPerSecond) {
         return;
       }
 
-      let offset = 0;
-
-      const pump = () => {
-        refillTokens();
-
-        if (tokens < 1) {
-          setTimeout(pump, 5);
-          return;
+      (async () => {
+        let offset = 0;
+        while (offset < chunk.length) {
+          const maxBytes = chunk.length - offset;
+          const grant = await limiter.acquire(maxBytes);
+          const piece = chunk.subarray(offset, offset + grant);
+          offset += grant;
+          this.push(piece);
         }
-
-        const writableSize = Math.min(chunk.length - offset, Math.max(1, Math.floor(tokens)));
-        const piece = chunk.subarray(offset, offset + writableSize);
-        tokens -= writableSize;
-        offset += writableSize;
-
-        this.push(piece);
-
-        if (offset >= chunk.length) {
-          callback();
-          return;
-        }
-
-        setImmediate(pump);
-      };
-
-      pump();
+      })()
+        .then(() => callback())
+        .catch((err) => callback(err));
     },
   });
 }
