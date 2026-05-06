@@ -4,7 +4,7 @@
 
 **نسخه سبک و بهینه‌شده XHTTP Relay روی Node Runtime ورسل**
 
-[![Version](https://img.shields.io/badge/Version-1.3.5--eco-blue.svg?style=for-the-badge)]()
+[![Version](https://img.shields.io/badge/Version-1.3.6--eco-blue.svg?style=for-the-badge)]()
 [![Runtime](https://img.shields.io/badge/Vercel-Node_Runtime-black.svg?style=for-the-badge&logo=vercel)]()
 [![Profile](https://img.shields.io/badge/Profile-ECO_Throttle-2ea44f.svg?style=for-the-badge)]()
 
@@ -12,7 +12,7 @@
 <br>
 🟥 **نسخه ECO طوری تیون شده که علاوه بر امنیت سفت‌وسخت v1.3، کم‌هزینه‌ترین رفتار ممکن روی Vercel Pro رو داشته باشه؛ یعنی با کنترل هوشمند Timeout، Inflight، Throttle و Logها، مصرف منابع و هزینه نهایی تا جای ممکن پایین نگه داشته میشه.**
 
-📣 **راستی!** خوشحال میشم به کانال تلگرامی من سر بزنید: [B3hnamR@](https://t.me/B3hnamR).
+📣 **جهت دریافت اطلاعات و نکات بیشتر به کانال تلگرامی من مراجعه کنید:** [B3hnamR@](https://t.me/B3hnamR).
 📌 **نکته مهم:** لطفاً این راهنما رو تا انتها و با دقت بخونید تا موقع ستاپ کردن هیچ مشکلی براتون پیش نیاد.
 
 **🔒 [برای ساخت اکانت، مطالعه این آموزش کاملاً ضروری است: Anti-Ban-Tutorial.md](./Anti-Ban-Tutorial.md)**
@@ -72,7 +72,7 @@
 - لیست پروژه‌های اکانت Vercel رو می‌خونه تا پروژه موجود انتخاب کنی یا NEW بسازی.
 - متغیرهای محیطی (ENV) رو اتوماتیک روی `production` ست می‌کنه.
 - دیپلوی نهایی رو انجام میده و همونجا لینک نهایی سایت رو تحویلت میده.
-- دیفالت اقتصادی `v1.3.5` رو هم اعمال می‌کنه: `MAX_INFLIGHT=128`، `MAX_UP_BPS=2621440`، `MAX_DOWN_BPS=2621440`، `UPSTREAM_TIMEOUT_MS=50000` (دیفالت اینستالر) و ENVهای کنترل لاگ (`SUCCESS_LOG_SAMPLE_RATE`، `SUCCESS_LOG_MIN_DURATION_MS`، `ERROR_LOG_MIN_INTERVAL_MS`).
+- دیفالت اقتصادی `v1.3.6` رو هم اعمال می‌کنه: `MAX_INFLIGHT=128`، `MAX_UP_BPS=2621440`، `MAX_DOWN_BPS=2621440`، `UPSTREAM_TIMEOUT_MS=50000` (دیفالت اینستالر) و ENVهای کنترل لاگ (`SUCCESS_LOG_SAMPLE_RATE`، `SUCCESS_LOG_MIN_DURATION_MS`، `ERROR_LOG_MIN_INTERVAL_MS`).
 - مسیر عمومی API (`PUBLIC_RELAY_PATH`) رو هم ست می‌کنه تا ترافیک Relay همیشه از همون prefix رد بشه (دیفالت: `/api`).
 - لندینگ استاتیک رو موقع Build از تمپلیت‌های داخل پروژه می‌سازه و پیش‌فرض به‌صورت رندم انتخاب می‌کنه.
 
@@ -95,6 +95,14 @@
 - `Update production env vars (selected project)`: آپدیت کردن متغیرها و سرعت‌ها.
 - `List recent deployments (selected project)`: دیدن لیست دیپلوی‌های اخیر.
 - `Deploy as NEW project`: ساختن یه پروژه کاملاً جدید.
+- `Run health + smoke checks`: تست سریع سلامت مسیرها بعد از دیپلوی.
+- `Show professional logs (translated/compact)`: خلاصه‌ لاگ‌های خطامحور به شکل قابل‌فهم.
+- `Run load-test lite`: تست فشار سبک برای چک اولیه پایداری.
+- `ENV drift detector`: بررسی اینکه ENVهای لازم وجود دارند و از پروفایل انتخابی Drift نکرده باشند.
+- `Profile benchmark runner`: گرفتن یک بنچمارک جمع‌وجور روی پروفایل‌های آماده.
+- `Live logs (translated/compact)`: نمایش زنده لاگ‌ها تا وقتی `Q` بزنی.
+- `View deployment ENV config (full)`: دیدن وضعیت کامل ENVهای پروژه.
+- `Delete selected project (DANGER)`: حذف پروژه انتخاب‌شده از Vercel (با تایید نهایی).
 
 **تغییر ماهیت ریز هر Deploy (Randomization):**
 برای اینکه همه با Fingerprint یکسان دیپلوی نکنن، اسکریپت قبل از Deploy این‌ها رو **موقت** رندوم می‌کنه:
@@ -104,6 +112,46 @@
 بعد از پایان Deploy (حتی اگر Fail بشه)، فایل‌های لوکال به حالت اصلی برمی‌گردن.
 
 > 💡 **نکته:** هر جای کار خواستی اسکریپت رو متوقف کنی کافیه `Ctrl + C` رو بزنی. `RELAY_PATH` باید دقیقاً با Path تنظیمات سرور خارجت یکی باشه. `PUBLIC_RELAY_PATH` فقط مسیر عمومی روی دامنه Vercel خودته (دیفالت: `/api`).
+
+**مودهای دیپلوی داخل اینستالر (Preset):**
+- `ECO_MIN_COST`: حالت اقتصادی (Node + Fluid OFF) با کمترین هزینه پایدار.
+- `BALANCED_LOW_TIMEOUT`: بالانس سرعت/هزینه (Node + Fluid ON).
+- `MAX_STABILITY_HIGH_CONN`: برای اتصال همزمان بالاتر و پایداری بیشتر (Node + Fluid ON).
+- `STRESS_TEST`: حالت تهاجمی برای تست فشار (Node + Fluid ON).
+- `FAST_PIPE_REWRITE_SECURE`: حالت Rewrite سریع با قفل اختیاری هدر `x-relay-key`.
+- `CUSTOM_BUILD`: همه‌چی دستی، برای کسی که تنظیم اختصاصی می‌خواد.
+
+**نکته مهم درباره Rewrite mode:**
+- اگر `RELAY_KEY` رو خالی بزاری، Rewrite بدون قفل هدر deploy میشه.
+- اگر `RELAY_KEY` بدی، فقط درخواست‌هایی که هدر `x-relay-key` درست داشته باشن عبور می‌کنن.
+- اگر Rewrite رو با `RELAY_KEY` ساختی، توی کلاینت باید هدر رو دستی بفرستی؛ وگرنه معمولاً `403` یا `404` می‌گیری.
+- جای این هدر در اغلب کلاینت‌ها بخش `XHTTP Extra` هست.
+
+**تنظیم کلاینت برای Rewrite Secure (وقتی RELAY_KEY ست شده):**
+در قسمت `XHTTP Extra` این JSON رو وارد کن (کلید رو با مقدار خودت جایگزین کن):
+
+```json
+{
+  "headers": {
+    "x-relay-key": "YourStrongKey"
+  }
+}
+```
+
+**خلاصه خیلی ساده Rewrite mode:**
+- `Address` و `SNI`: دامنه فرانت (مثل `nextjs.org`)
+- `Host`: دامنه Vercel پروژه خودت
+- `Path`: همون `PUBLIC_RELAY_PATH` (مثلاً `/api`)
+- اگر `RELAY_KEY` فعاله: حتماً هدر `x-relay-key` رو در `XHTTP Extra` بفرست
+
+**هوشمندسازی Region در اینستالر:**
+- اسکریپت از روی `TARGET_DOMAIN`، DNS رو چک می‌کنه و یک Region پیشنهادی میده.
+- اگر DNS لوکال و DNS عمومی متفاوت باشن، هشدار میده و پیشنهاد رو با DNS عمومی می‌سازه.
+- انتخاب نهایی Region همیشه دست خود کاربره.
+
+**سینک خودکار Deployment Protection:**
+- هنگام دیپلوی، اسکریپت تلاش می‌کنه `Vercel Authentication` پروژه رو خودکار خاموش کنه تا دسترسی عمومی درست کار کنه.
+- اگر API اجازه نده، پیام شفاف میده که از Dashboard خاموشش کنی.
 
 **لندینگ رندم چطور کار می‌کنه؟**
 - تمپلیت‌ها داخل مسیر `templates/landing/` هستند.
@@ -159,11 +207,11 @@ vercel deploy
 - **تنظیم LANDING_TEMPLATE (اختیاری):**
   اگر می‌خوای در هر Deploy دقیقاً یک تمپلیت ثابت بیاد بالا، `LANDING_TEMPLATE` رو برابر نام پوشه تمپلیت بذار (مثل `forge-stack`). اگر نذاری، هر بیلد رندم انتخاب میشه.
 
-> 💡 **مهم:** تیک گزینه `Sensitive` رو حتماً بردار تا بعداً بتونی مقدار این متغیرها رو تو داشبورد ببینی. در نهایت دکمه **Save** رو بزن.
+> 💡 **مهم:** اگر می‌خوای مقادیر ENV در ابزار Inspector اینستالر قابل‌نمایش باشند، متغیرها رو `Sensitive` نساز. بعضی اکانت‌ها/تیم‌ها با Policy داخلی مقدارها رو Mask می‌کنن که در این حالت Inspector فقط `(hidden/sensitive)` نشون میده.
 
 مقادیر ENV رو می‌تونی دقیقاً طبق جدول زیر ست کنی:
 
-| متغیر | وضعیت | مقدار دیفالت v1.3.5 | توضیح |
+| متغیر | وضعیت | مقدار دیفالت v1.3.6 | توضیح |
 | :--- | :---: | :---: | :--- |
 | `TARGET_DOMAIN` | 🔴 اجباری | - | آدرس Upstream مثل `https://domain:port` |
 | `RELAY_PATH` | 🔴 اجباری | - | مسیر اینباند؛ باید دقیقاً با مسیر سرور خارج یکی باشه (مثلاً `/api`) |
@@ -204,6 +252,26 @@ UPSTREAM_TIMEOUT_MS=50000
 
 ---
 
+## 🧪 تست و دیباگ بعد از دیپلوی (با خود اینستالر)
+
+بعد از اینکه Deploy تموم شد، اینستالر خودش می‌تونه تست‌های ضروری رو بگیره:
+
+- `Health Check`:
+  - `Root: 200` یعنی روت دامنه بالا هست.
+  - `API: 400` در تست خام معمولاً **طبیعیه** و به معنی خراب بودن تونل نیست (چون Probe ساده‌ست، نه هندشیک کامل کلاینت).
+- `Smoke Tests`:
+  - مسیر اشتباه باید `404` بده.
+  - متد اشتباه باید `405` بده.
+  - مسیر درست Relay باید `non-404` باشه (معمولاً `400` یا `200` می‌بینی که هر دو در تست خام قابل قبوله).
+
+برای عیب‌یابی سریع:
+- گزینه `Show professional logs` رو با پنجره زمانی بزرگ‌تر اجرا کن.
+- گزینه `Live logs` رو باز کن و همزمان از کلاینت ping/test بزن.
+- گزینه `ENV drift detector` رو بزن تا بفهمی ENVهای پروفایل درست ست شدن یا نه.
+- گزینه `View deployment ENV config` رو بزن تا وضعیت ENVها و زمان آخرین آپدیت رو ببینی.
+
+---
+
 ## 🧮 چطور سرعتم رو به بایت محاسبه کنم؟
 
 متغیرهای `MAX_UP_BPS` و `MAX_DOWN_BPS` بر اساس «بایت بر ثانیه» کار می‌کنن. اگه می‌خوای سرعتت رو بر اساس مگابیت (Mbps) تنظیم کنی، فرمولش اینه:
@@ -220,7 +288,7 @@ UPSTREAM_TIMEOUT_MS=50000
 
 ---
 
-## 💸 محاسبه هزینه روی Vercel Pro (نسخه 1.3.5)
+## 💸 محاسبه هزینه روی Vercel Pro (نسخه 1.3.6)
 
 این نسخه با هدف «اقتصادی‌ترین حالت پایدار» تیون شده.  
 دیفالت فعلی پروژه روی این مقادیره:
@@ -257,7 +325,7 @@ ERROR_LOG_MIN_INTERVAL_MS=5000
 - `Provisioned Memory`: شروع از حدود `$0.0106 / GB-hour`
 
 یعنی اگر مصرفت مثل تست‌های سبک روزانه باشه، معمولاً فشار هزینه اصلی از **تعداد Invocation + Origin Transfer + لاگ زیاد** میاد؛  
-برای همین توی `v1.3.5` لاگ‌ها Rate-limit و Sample شدن تا هزینه Observability هم تا حد ممکن بیاد پایین.
+برای همین توی `v1.3.6` لاگ‌ها Rate-limit و Sample شدن تا هزینه Observability هم تا حد ممکن بیاد پایین.
 
 ---
 
