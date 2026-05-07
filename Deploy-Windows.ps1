@@ -63,6 +63,32 @@ function Normalize-PathLike([string]$PathValue) {
   return $p
 }
 
+function Convert-PathToVercelSource([string]$PathValue) {
+  $p = Normalize-PathLike -PathValue $PathValue
+  if ([string]::IsNullOrWhiteSpace($p) -or $p -eq "/") { $p = "/api" }
+  return "$p/:path*"
+}
+
+function Convert-PathToVercelSourceBase([string]$PathValue) {
+  $p = Normalize-PathLike -PathValue $PathValue
+  if ([string]::IsNullOrWhiteSpace($p) -or $p -eq "/") { $p = "/api" }
+  return $p
+}
+
+function Convert-PathToVercelDestination([string]$TargetDomain, [string]$PathValue) {
+  $target = ([string]$TargetDomain).TrimEnd("/")
+  $p = Normalize-PathLike -PathValue $PathValue
+  if ([string]::IsNullOrWhiteSpace($p) -or $p -eq "/") { $p = "/api" }
+  return "$target$p/:path*"
+}
+
+function Convert-PathToVercelDestinationBase([string]$TargetDomain, [string]$PathValue) {
+  $target = ([string]$TargetDomain).TrimEnd("/")
+  $p = Normalize-PathLike -PathValue $PathValue
+  if ([string]::IsNullOrWhiteSpace($p) -or $p -eq "/") { $p = "/api" }
+  return "$target$p"
+}
+
 function Read-YesNo([string]$Prompt, [bool]$DefaultYes = $true) {
   $def = if ($DefaultYes) { "Y/n" } else { "y/N" }
   while ($true) {
@@ -80,16 +106,19 @@ function Choose-DeploymentMode {
   Write-Host "Choose deployment mode:" -ForegroundColor Cyan
   Write-Host "[0] Back"
   Write-Host ""
-  Write-Host "[1] FAST PIPE  (Recommended / No Fluid cost / Hot)" -ForegroundColor Green
-  Write-Host "    Rewrite mode. Direct Vercel Edge pass-through; optional x-relay-key."
+  Write-Host "[1] FAST PIPE COMPAT  (Recommended / No Fluid cost / Best app compatibility)" -ForegroundColor Green
+  Write-Host "    Rewrite mode. Strict path + no-store headers. No x-relay-key; use a strong/random path."
   Write-Host ""
-  Write-Host "[2] BALANCED   (Node + Fluid ON)" -ForegroundColor Cyan
+  Write-Host "[2] FAST PIPE SECURE  (No Fluid cost / Header locked)" -ForegroundColor Green
+  Write-Host "    Rewrite mode. Strict path + no-store headers + required x-relay-key."
+  Write-Host ""
+  Write-Host "[3] BALANCED   (Node + Fluid ON)" -ForegroundColor Cyan
   Write-Host "    Lower timeout profile for normal usage. 256 conn | 5 MB/s up/down | 60s upstream | 800s function."
   Write-Host ""
-  Write-Host "[3] MAX CONN   (Node + Fluid ON)" -ForegroundColor Cyan
+  Write-Host "[4] MAX CONN   (Node + Fluid ON)" -ForegroundColor Cyan
   Write-Host "    Higher capacity profile. 512 conn | 10 MB/s up/down | 60s upstream | 800s function."
   Write-Host ""
-  Write-Host "[4] CUSTOM     (Manual)" -ForegroundColor Yellow
+  Write-Host "[5] CUSTOM     (Manual)" -ForegroundColor Yellow
   Write-Host "    Set runtime, Fluid, regions, CPU, duration, limits, timeout and logs yourself."
   Write-Host ""
 
@@ -104,8 +133,9 @@ function Choose-DeploymentMode {
     "1" {
       return @{
         Canceled = $false
-        ModeKey = "FAST_PIPE_REWRITE_SECURE"
+        ModeKey = "FAST_PIPE_REWRITE_COMPAT"
         Runtime = "rewrite"
+        RewriteSecurity = "compat"
         FluidEnabled = $false
         MaxInflight = ""
         MaxUpBps = ""
@@ -120,8 +150,26 @@ function Choose-DeploymentMode {
     "2" {
       return @{
         Canceled = $false
+        ModeKey = "FAST_PIPE_REWRITE_SECURE"
+        Runtime = "rewrite"
+        RewriteSecurity = "secure"
+        FluidEnabled = $false
+        MaxInflight = ""
+        MaxUpBps = ""
+        MaxDownBps = ""
+        UpstreamTimeoutMs = "30000"
+        FunctionTimeoutSec = 0
+        FunctionCpu = ""
+        RunStressAfterDeploy = $false
+        RequireRelayKey = $true
+      }
+    }
+    "3" {
+      return @{
+        Canceled = $false
         ModeKey = "BALANCED_LOW_TIMEOUT"
         Runtime = "node"
+        RewriteSecurity = ""
         FluidEnabled = $true
         MaxInflight = "256"
         MaxUpBps = "5242880"
@@ -133,11 +181,12 @@ function Choose-DeploymentMode {
         RequireRelayKey = $false
       }
     }
-    "3" {
+    "4" {
       return @{
         Canceled = $false
         ModeKey = "MAX_STABILITY_HIGH_CONN"
         Runtime = "node"
+        RewriteSecurity = ""
         FluidEnabled = $true
         MaxInflight = "512"
         MaxUpBps = "10485760"
@@ -149,12 +198,21 @@ function Choose-DeploymentMode {
         RequireRelayKey = $false
       }
     }
-    "4" {
+    "5" {
       $runtimePick = Read-Default "Runtime type (node/rewrite, 0 = Back)" "node"
       if ($runtimePick.Trim() -eq "0") {
         return @{ Canceled = $true; ModeKey = "__BACK__" }
       }
       $runtimeType = if ($runtimePick.Trim().ToLowerInvariant() -eq "rewrite") { "rewrite" } else { "node" }
+      $rewriteSecurity = ""
+      if ($runtimeType -eq "rewrite") {
+        Write-Host ""
+        Write-Host "Custom rewrite security:" -ForegroundColor Cyan
+        Write-Host "[1] Compat  | no header key, use a strong/random path"
+        Write-Host "[2] Secure  | require x-relay-key header"
+        $secPick = Read-Default "Select rewrite security" "1"
+        $rewriteSecurity = if ($secPick -eq "2") { "secure" } else { "compat" }
+      }
       $fluidEnabled = $false
       $maxInflight = ""
       $maxUpBps = ""
@@ -176,6 +234,7 @@ function Choose-DeploymentMode {
         Canceled = $false
         ModeKey = "CUSTOM_BUILD"
         Runtime = $runtimeType
+        RewriteSecurity = $rewriteSecurity
         FluidEnabled = $fluidEnabled
         MaxInflight = $maxInflight
         MaxUpBps = $maxUpBps
@@ -190,8 +249,9 @@ function Choose-DeploymentMode {
     default {
       return @{
         Canceled = $false
-        ModeKey = "FAST_PIPE_REWRITE_SECURE"
+        ModeKey = "FAST_PIPE_REWRITE_COMPAT"
         Runtime = "rewrite"
+        RewriteSecurity = "compat"
         FluidEnabled = $false
         MaxInflight = ""
         MaxUpBps = ""
@@ -1094,33 +1154,52 @@ function Restore-VercelConfigAfterDeploy($state) {
 }
 
 function Build-RewriteSecureVercelJson([string]$TargetDomain, [string]$RelayPath, [string]$PublicRelayPath, [string]$RelayKey) {
-  $target = $TargetDomain.TrimEnd("/")
-  $destAny = "$target/`$1"
+  $sourceBase = Convert-PathToVercelSourceBase -PathValue $PublicRelayPath
+  $sourceAny = Convert-PathToVercelSource -PathValue $PublicRelayPath
+  $destinationBase = Convert-PathToVercelDestinationBase -TargetDomain $TargetDomain -PathValue $RelayPath
+  $destinationAny = Convert-PathToVercelDestination -TargetDomain $TargetDomain -PathValue $RelayPath
   $rk = ([string]$RelayKey).Trim()
-  $rewrites = @()
-  if (-not [string]::IsNullOrWhiteSpace($rk)) {
-    # Secure fast-pipe mode: forward everything only when x-relay-key matches.
-    $rewrites += [ordered]@{
-      source = "/(.*)"
-      has = @(
-        [ordered]@{
-          type = "header"
-          key = "x-relay-key"
-          value = $rk
-        }
+  $headers = @()
+  foreach ($src in @($sourceBase, $sourceAny)) {
+    $headers += [ordered]@{
+      source = $src
+      headers = @(
+        [ordered]@{ key = "Cache-Control"; value = "no-store, no-cache, must-revalidate, max-age=0" },
+        [ordered]@{ key = "CDN-Cache-Control"; value = "no-store" },
+        [ordered]@{ key = "Vercel-CDN-Cache-Control"; value = "no-store" }
       )
-      destination = $destAny
     }
-  } else {
-    # Plain fast-pipe mode (no header lock): forward everything to upstream.
-    $rewrites += [ordered]@{
-      source = "/(.*)"
-      destination = $destAny
+  }
+  $rewrites = @()
+  for ($i = 0; $i -lt 2; $i++) {
+    $src = @($sourceBase, $sourceAny)[$i]
+    $dst = @($destinationBase, $destinationAny)[$i]
+    if (-not [string]::IsNullOrWhiteSpace($rk)) {
+      # Secure fast-pipe mode: strict relay path only, and only when x-relay-key matches.
+      $rewrites += [ordered]@{
+        source = $src
+        has = @(
+          [ordered]@{
+            type = "header"
+            key = "x-relay-key"
+            value = $rk
+          }
+        )
+        destination = $dst
+      }
+    } else {
+      # Compat fast-pipe mode: strict relay path only, no header lock.
+      $rewrites += [ordered]@{
+        source = $src
+        destination = $dst
+      }
     }
   }
   $obj = [ordered]@{
     version = 2
+    headers = $headers
     rewrites = $rewrites
+    trailingSlash = $false
   }
   return ($obj | ConvertTo-Json -Depth 20)
 }
@@ -1271,6 +1350,40 @@ function Show-DeploySummary($deployInfo) {
   Write-Host ""
 }
 
+function Show-RewriteClientGuidance($cfg, $deployInfo) {
+  if ($null -eq $cfg -or $cfg.Runtime -ne "rewrite") { return }
+  Write-Host ""
+  Write-Host "FAST PIPE zero-compute notes:" -ForegroundColor Yellow
+  Write-Host " - This deploy uses strict-path Vercel rewrites, not Node Functions." -ForegroundColor Cyan
+  Write-Host " - No Fluid/Function CPU/Memory/Duration is used." -ForegroundColor Cyan
+  Write-Host " - no-store headers were added for the relay path to reduce CDN/cache interference." -ForegroundColor Cyan
+  Write-Host " - There is still no Node throttle, retry, timeout, request log, or concurrency control in rewrite mode." -ForegroundColor DarkYellow
+  Write-Host ""
+  Write-Host "Client setup:" -ForegroundColor Yellow
+  Write-Host (" - Host: {0}" -f ([string]$deployInfo.Alias -replace '^https?://', '').TrimEnd("/")) -ForegroundColor Cyan
+  Write-Host (" - Path: {0}" -f $cfg.PublicRelayPath) -ForegroundColor Cyan
+  if ($cfg.RewriteSecurity -eq "secure" -and -not [string]::IsNullOrWhiteSpace([string]$cfg.RelayKey)) {
+    Write-Host " - XHTTP Extra: use the JSON header below." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "XHTTP Extra (client) because x-relay-key is enabled:" -ForegroundColor Yellow
+    $clientRelayKey = ([string]$cfg.RelayKey).Replace("\", "\\").Replace('"', '\"')
+    Write-Host '{' -ForegroundColor Cyan
+    Write-Host '  "headers": {' -ForegroundColor Cyan
+    Write-Host ('    "x-relay-key": "{0}"' -f $clientRelayKey) -ForegroundColor Cyan
+    Write-Host '  }' -ForegroundColor Cyan
+    Write-Host '}' -ForegroundColor Cyan
+  } else {
+    Write-Host " - No x-relay-key header is required in COMPAT mode." -ForegroundColor Green
+    Write-Host " - Use a strong/random path on both this installer and your upstream inbound for privacy." -ForegroundColor DarkYellow
+  }
+  Write-Host ""
+  Write-Host "If Instagram/YouTube still feel bad:" -ForegroundColor Yellow
+  Write-Host " - Test Mux ON with low concurrency first (4 or 8). If video stalls, test Mux OFF too." -ForegroundColor Cyan
+  Write-Host " - If your client has heartbeat/keepalive, try 15-20 seconds. Very low values increase Edge Requests." -ForegroundColor Cyan
+  Write-Host " - On the upstream server, keep BBR enabled and test MTU 1350/1280 only if mobile routes stall." -ForegroundColor Cyan
+  Write-Host " - For full control/log/throttle, use BALANCED or MAX CONN Node mode instead of rewrite." -ForegroundColor DarkYellow
+}
+
 function Get-LinkedTeamId([string]$ProjectRoot) {
   $projectFile = Join-Path $ProjectRoot ".vercel\project.json"
   if (-not (Test-Path $projectFile)) { return "" }
@@ -1331,9 +1444,14 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
   }
   $relayKey = ""
   if ($mode.Runtime -eq "rewrite") {
-    Write-Host "RELAY_KEY is optional in rewrite mode." -ForegroundColor DarkYellow
-    Write-Host "Leave it empty for public/no-header rewrite. If you set it, the client MUST send header x-relay-key with the exact same value." -ForegroundColor DarkYellow
-    $relayKey = Read-Optional "RELAY_KEY (optional; empty = no x-relay-key required)"
+    if ($mode.RewriteSecurity -eq "secure") {
+      Write-Host "FAST PIPE SECURE: x-relay-key is required." -ForegroundColor DarkYellow
+      Write-Host "The client MUST send this header on every request. If some apps fail, test FAST PIPE COMPAT with a strong random path." -ForegroundColor DarkYellow
+      $relayKey = Read-Required "RELAY_KEY (required for secure rewrite)"
+    } else {
+      Write-Host "FAST PIPE COMPAT: no x-relay-key will be required." -ForegroundColor Green
+      Write-Host "For privacy/security, use a strong random RELAY_PATH like /api-b7f39xrelay and set the same path on your upstream inbound." -ForegroundColor DarkYellow
+    }
   }
 
   Write-Step "Environment values selected:"
@@ -1345,6 +1463,8 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
     Write-Host ("FLUID_COMPUTE = {0}" -f $(if ($mode.FluidEnabled) { "on" } else { "off" }))
     Write-Host ("FUNCTION_TIMEOUT_SEC     = {0}" -f $mode.FunctionTimeoutSec)
     Write-Host ("FUNCTION_CPU             = {0}" -f $mode.FunctionCpu)
+  } else {
+    Write-Host ("REWRITE_MODE = {0}" -f $(if ($mode.RewriteSecurity -eq "secure") { "secure header lock" } else { "compat no-header" }))
   }
   Write-Host "RELAY_PATH    = $relayPath"
   Write-Host "PUBLIC_RELAY_PATH = $publicRelayPath"
@@ -1369,6 +1489,8 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
   if ($mode.Runtime -eq "node") {
     Write-Host "FUNCTION_REGION            = $selectedRegion"
   } else {
+    Write-Host "REWRITE_CACHE_HEADERS      = no-store / CDN no-store"
+    Write-Host "REWRITE_PATH_MODE          = strict path only (no catch-all)"
     Write-Host "REWRITE_NOTE               = no Vercel ENV, Fluid, CPU, Function Region, or Max Duration will be configured."
   }
 
@@ -1377,6 +1499,7 @@ function Collect-NewDeploymentConfig([string]$DefaultScope) {
     Scope = $scope
     DeployMode = $mode.ModeKey
     Runtime = $mode.Runtime
+    RewriteSecurity = $mode.RewriteSecurity
     FluidEnabled = [bool]$mode.FluidEnabled
     FunctionTimeoutSec = [int]$mode.FunctionTimeoutSec
     FunctionCpu = $mode.FunctionCpu
@@ -1409,6 +1532,8 @@ function Export-ShareableConfigSummary($cfg, [string]$AliasUrl = "") {
     $lines += "fluid_compute=$($cfg.FluidEnabled)"
     $lines += "function_timeout_sec=$($cfg.FunctionTimeoutSec)"
     $lines += "function_cpu=$($cfg.FunctionCpu)"
+  } else {
+    $lines += "rewrite_security=$($cfg.RewriteSecurity)"
   }
   $authState = "unknown"
   if ($cfg.ContainsKey("VercelAuthentication") -and -not [string]::IsNullOrWhiteSpace([string]$cfg.VercelAuthentication)) {
@@ -1430,6 +1555,8 @@ function Export-ShareableConfigSummary($cfg, [string]$AliasUrl = "") {
     $lines += "error_log_min_interval_ms=$($cfg.ErrorLogMinIntervalMs)"
   } else {
     $lines += "rewrite_config=vercel_json_only"
+    $lines += "rewrite_path_mode=strict"
+    $lines += "rewrite_cache_headers=no-store"
     $lines += "vercel_env=not_required"
   }
   if (-not [string]::IsNullOrWhiteSpace($cfg.RelayKey)) { $lines += "relay_key=(set)" }
@@ -1476,16 +1603,7 @@ function Run-NewDeploymentFlow([string]$DefaultScope) {
   $deployInfo = Deploy-Production -Scope $cfg.Scope -Region $cfg.Region -Runtime $cfg.Runtime -TargetDomain $cfg.TargetDomain -RelayPath $cfg.RelayPath -PublicRelayPath $cfg.PublicRelayPath -RelayKey $cfg.RelayKey
   $cfg.VercelAuthentication = [string]$script:LastVercelAuthStatus
   Show-DeploySummary $deployInfo
-  if ($cfg.Runtime -eq "rewrite" -and -not [string]::IsNullOrWhiteSpace($cfg.RelayKey)) {
-    Write-Host "XHTTP Extra (client) because RELAY_KEY is enabled:" -ForegroundColor Yellow
-    $clientRelayKey = ([string]$cfg.RelayKey).Replace("\", "\\").Replace('"', '\"')
-    Write-Host '{' -ForegroundColor Cyan
-    Write-Host '  "headers": {' -ForegroundColor Cyan
-    Write-Host ('    "x-relay-key": "{0}"' -f $clientRelayKey) -ForegroundColor Cyan
-    Write-Host '  }' -ForegroundColor Cyan
-    Write-Host '}' -ForegroundColor Cyan
-    Write-Host ""
-  }
+  Show-RewriteClientGuidance -cfg $cfg -deployInfo $deployInfo
   Export-ShareableConfigSummary -cfg $cfg -AliasUrl $deployInfo.Alias
   $runTests = Read-Default "Run essential health/smoke tests now? (Y/n)" "y"
   if ($runTests.ToLowerInvariant() -ne "n") {
@@ -1585,7 +1703,7 @@ function Run-UpdateEnvFlow([string]$Scope) {
     if (-not [string]::IsNullOrWhiteSpace([string]$state.RelayPath)) { $relayPath = [string]$state.RelayPath }
   }
   if ($runtime -eq "rewrite") {
-    Write-Host "Note: this project is marked as FAST_PIPE_REWRITE_SECURE locally. Rewrite deploys do not use Node ENV vars." -ForegroundColor DarkYellow
+    Write-Host "Note: this project is marked as Fast Pipe rewrite locally. Rewrite deploys do not use Node ENV vars." -ForegroundColor DarkYellow
     $continue = Read-Default "Continue editing ENV and redeploy as Node runtime? (y/N)" "n"
     if ($continue.ToLowerInvariant() -ne "y") {
       Write-Host "Canceled. Returning to main menu." -ForegroundColor DarkYellow
@@ -4059,7 +4177,7 @@ function Run-ProfileBenchmark([string]$ProjectName, [string]$RelayPath, [string]
     Run-LoadTestLite -ProjectName $ProjectName -RelayPath $RelayPath
   }
   if (([string]$Runtime).ToLowerInvariant() -eq "rewrite") {
-    Write-Host "Log analysis skipped: FAST_PIPE_REWRITE_SECURE uses Vercel rewrites and has no Node runtime logs." -ForegroundColor DarkYellow
+    Write-Host "Log analysis skipped: Fast Pipe rewrite uses Vercel rewrites and has no Node runtime logs." -ForegroundColor DarkYellow
     return
   }
   $minutes = [int](Read-Default "Minutes window for log analysis" "5")
@@ -4302,8 +4420,8 @@ function Run-ManagementLoop([string]$InitialScope) {
             Write-Host "Select a project first (option 1)." -ForegroundColor Red
             break
           }
-          if ($selectedRuntime -eq "rewrite" -or $selectedDeployMode -eq "FAST_PIPE_REWRITE_SECURE") {
-            Write-Host "Logs skipped: FAST_PIPE_REWRITE_SECURE uses Vercel rewrites and has no Node runtime logs." -ForegroundColor DarkYellow
+          if ($selectedRuntime -eq "rewrite" -or $selectedDeployMode -like "FAST_PIPE_REWRITE_*") {
+            Write-Host "Logs skipped: Fast Pipe rewrite uses Vercel rewrites and has no Node runtime logs." -ForegroundColor DarkYellow
             break
           }
           $minsRaw = Read-Default "Minutes window (0 = Back)" "5"
@@ -4354,8 +4472,8 @@ function Run-ManagementLoop([string]$InitialScope) {
             Write-Host "Select a project first (option 1)." -ForegroundColor Red
             break
           }
-          if ($selectedRuntime -eq "rewrite" -or $selectedDeployMode -eq "FAST_PIPE_REWRITE_SECURE") {
-            Write-Host "Live logs skipped: FAST_PIPE_REWRITE_SECURE uses Vercel rewrites and has no Node runtime logs." -ForegroundColor DarkYellow
+          if ($selectedRuntime -eq "rewrite" -or $selectedDeployMode -like "FAST_PIPE_REWRITE_*") {
+            Write-Host "Live logs skipped: Fast Pipe rewrite uses Vercel rewrites and has no Node runtime logs." -ForegroundColor DarkYellow
             break
           }
           Start-LiveLogsTranslated -ProjectName $selectedProjectName -Scope $scope -TokenStorePath $tokenStorePath

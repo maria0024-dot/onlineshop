@@ -47,9 +47,12 @@
 
 ## 🧠 دو حالت اصلی پروژه
 
-### ۱. FAST_PIPE_REWRITE_SECURE
+### ۱. FAST PIPE Rewrite
 
-این حالت پیشنهادی برای شروعه.
+این حالت پیشنهادی برای شروعه و داخل اینستالر دو مدل دارد:
+
+- `FAST PIPE COMPAT`: بدون هدر پسورد، با مسیر سخت/رندوم. بهترین گزینه برای سازگاری با اپ‌هایی مثل Instagram و YouTube.
+- `FAST PIPE SECURE`: با هدر اجباری `x-relay-key`. امن‌تر است، ولی ممکنه روی بعضی کلاینت‌ها یا اپ‌های پر-request سازگاری کمتری داشته باشد.
 
 در این مدل Vercel فقط Rewrite انجام میده؛ یعنی درخواست از Edge ورسل رد میشه و مستقیم به `TARGET_DOMAIN` فوروارد میشه. اینجا کد Node پروژه اجرا نمی‌شود، پس دیتایی که میاد و میره عملاً بدون پردازش، بدون throttle و بدون کنترل نرم‌افزاری از سمت ما عبور می‌کنه.
 
@@ -64,13 +67,22 @@
 - Function Max Duration نیاز ندارد.
 - لاگ Node/Function ندارد، چون اصلاً Node Function اجرا نمی‌شود.
 - اگر پسورد بذاری، قفل با هدر `x-relay-key` داخل `vercel.json` اعمال میشه.
+- rewrite فقط روی همان مسیر انتخابی ساخته می‌شود، نه روی کل سایت. یعنی حالت strict path دارد.
+- برای مسیر relay هدرهای `Cache-Control`، `CDN-Cache-Control` و `Vercel-CDN-Cache-Control` با مقدار no-store ست می‌شوند تا کش/CDN کمتر در مسیر تونل دخالت کند.
 - محدودیت‌هایی مثل `MAX_INFLIGHT`، `MAX_UP_BPS`، `MAX_DOWN_BPS` و `UPSTREAM_TIMEOUT_MS` روی این مود اعمال نمی‌شوند.
 - لاگ‌های حرفه‌ای و Live Logs اینستالر برای این مود skip می‌شوند، چون runtime ای وجود ندارد که لاگ تولید کند.
 - هزینه Fluid/Function/CPU/Memory برای این مود صفر است.
 - مصرفی که ممکنه ببینی مربوط به `Fast Data Transfer` و `Edge Requests` است، نه Fluid Compute.
 
-اگر `RELAY_KEY` رو خالی بزاری، rewrite بدون پسورد ساخته میشه.
-اگر `RELAY_KEY` وارد کنی، کلاینت حتماً باید این هدر رو بفرسته:
+در `FAST PIPE COMPAT` هدر پسورد لازم نیست. برای امنیت، مسیر را سخت و رندوم انتخاب کن؛ مثلاً:
+
+```text
+/api-b7f39xrelay
+```
+
+همین مسیر باید هم در اینستالر و هم در inbound سرور خارجی یکی باشد.
+
+در `FAST PIPE SECURE` کلاینت حتماً باید این هدر رو بفرسته:
 
 ```json
 {
@@ -83,6 +95,14 @@
 **مسیر در Rewrite mode چطور حساب میشه؟**
 
 در Rewrite، همان path که کاربر روی دامنه Vercel می‌زند به `TARGET_DOMAIN` هم منتقل می‌شود. یعنی اگر کلاینت `/api` بزند، مقصد هم `/api` را دریافت می‌کند. پس مسیر کلاینت و مسیر اینباند مقصد را یکی بگیر تا دردسر نداشته باشی.
+
+**اگر Instagram/YouTube روی Fast Pipe خوب نبود:**
+
+- اول `FAST PIPE COMPAT` را تست کن، چون حذف header lock معمولاً سازگاری را بهتر می‌کند.
+- سمت کلاینت Mux را هم ON با concurrency پایین مثل 4 یا 8 تست کن، هم OFF تست کن. برای ویدئو همیشه Mux بهتر نیست.
+- اگر کلاینت heartbeat/keepalive دارد، 15 تا 20 ثانیه را تست کن. مقدار خیلی کم Edge Requests را بالا می‌برد.
+- روی سرور خارجی BBR را فعال نگه دار.
+- MTU مثل 1350 یا 1280 فقط تستی است؛ اگر route موبایل stall دارد ممکنه کمک کند، ولی راه‌حل قطعی نیست.
 
 ### ۲. Node Runtime
 
@@ -151,24 +171,34 @@
 
 ## 🎛️ مودهای دیپلوی داخل اینستالر
 
-### `[1] FAST PIPE`
+### `[1] FAST PIPE COMPAT`
 
-نام داخلی پروفایل: `FAST_PIPE_REWRITE_SECURE`
+نام داخلی پروفایل: `FAST_PIPE_REWRITE_COMPAT`
 
-**Rewrite (RECOMMENDED / NO COST / HOT)**
+**Rewrite (RECOMMENDED / NO FLUID COST / BEST COMPATIBILITY)**
 
-بهترین گزینه برای شروع. سریع و سبک است و Vercel Function مصرف نمی‌کند. در این حالت ENV، Fluid، Region، CPU و Duration روی پروژه ست نمی‌شود.
+بهترین گزینه برای شروع و مخصوصاً برای اپ‌هایی که request زیاد و ریز دارند. سریع و سبک است، Vercel Function مصرف نمی‌کند، header پسورد لازم ندارد و باید با یک `RELAY_PATH` سخت/رندوم استفاده شود.
 
 مراحلش ساده است:
 
 ۱. Scope رو انتخاب می‌کنی.
-۲. Preset اول یعنی Rewrite رو انتخاب می‌کنی.
+۲. Preset اول یعنی `FAST PIPE COMPAT` رو انتخاب می‌کنی.
 ۳. `TARGET_DOMAIN` رو وارد می‌کنی.
-۴. `RELAY_PATH` رو وارد می‌کنی.
-۵. اگر خواستی پسورد/کلید می‌ذاری؛ اگر نخواستی خالی می‌ذاری.
+۴. `RELAY_PATH` سخت و رندوم وارد می‌کنی، مثل `/api-b7f39xrelay`.
+۵. همان path را در inbound سرور خارجی هم می‌گذاری.
 ۶. Confirm می‌کنی و Deploy انجام میشه.
 
-### `[2] BALANCED`
+### `[2] FAST PIPE SECURE`
+
+نام داخلی پروفایل: `FAST_PIPE_REWRITE_SECURE`
+
+**Rewrite (NO FLUID COST / HEADER LOCKED)**
+
+مثل COMPAT است، ولی همه requestها باید هدر `x-relay-key` درست داشته باشند. اگر امنیت هدر می‌خوای خوبه؛ اگر Instagram/YouTube یا بعضی کلاینت‌ها بد کار کردند، COMPAT را تست کن.
+
+بعد از Deploy، اینستالر JSON آماده XHTTP Extra را با همان پسوردی که وارد کردی نشان می‌دهد.
+
+### `[3] BALANCED`
 
 نام داخلی پروفایل: `BALANCED_LOW_TIMEOUT`
 
@@ -183,7 +213,7 @@ Function Max Duration=800
 Function CPU=standard
 ```
 
-### `[3] MAX CONN`
+### `[4] MAX CONN`
 
 نام داخلی پروفایل: `MAX_STABILITY_HIGH_CONN`
 
@@ -198,7 +228,7 @@ Function Max Duration=800
 Function CPU=standard
 ```
 
-### `[4] CUSTOM`
+### `[5] CUSTOM`
 
 نام داخلی پروفایل: `CUSTOM_BUILD`
 
