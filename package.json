@@ -2,8 +2,5 @@
   "name": "host-2u8ydp5kas",
   "version": "1.2.28",
   "type": "module",
-  "private": true,
-  "scripts": {
-    "build": "echo skip"
-  }
+  "private": true
 }
